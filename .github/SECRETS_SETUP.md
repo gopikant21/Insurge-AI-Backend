@@ -13,7 +13,7 @@ This file lists all the secrets you need to configure in your GitHub repository 
 ### 🐳 Docker Registry
 
 ```
-DOCKER_USERNAME=your-dockerhub-username
+DOCKER_USERNAME=gopikant5jan
 DOCKER_PASSWORD=your-dockerhub-password-or-token
 ```
 
