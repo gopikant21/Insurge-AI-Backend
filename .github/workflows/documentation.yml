@@ -1,0 +1,505 @@
+name: Documentation & API Docs
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+jobs:
+  # Generate API Documentation
+  api-docs:
+    name: Generate API Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate OpenAPI spec
+        run: |
+          # Start the FastAPI app to generate OpenAPI spec
+          python -c "
+          import json
+          from app.main import app
+
+          # Get OpenAPI schema
+          openapi_schema = app.openapi()
+
+          # Save to file
+          with open('openapi.json', 'w') as f:
+              json.dump(openapi_schema, f, indent=2)
+
+          print('✅ OpenAPI specification generated')
+          "
+
+      - name: Generate API documentation
+        run: |
+          pip install redoc-cli
+
+          # Generate HTML documentation from OpenAPI spec
+          redoc-cli build openapi.json --output api-docs.html
+
+          echo "✅ API documentation generated"
+
+      - name: Upload API docs
+        uses: actions/upload-artifact@v3
+        with:
+          name: api-documentation
+          path: |
+            openapi.json
+            api-docs.html
+
+  # Generate Postman Collection
+  postman-collection:
+    name: Generate Postman Collection
+    runs-on: ubuntu-latest
+    needs: api-docs
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download OpenAPI spec
+        uses: actions/download-artifact@v3
+        with:
+          name: api-documentation
+
+      - name: Install tools
+        run: |
+          npm install -g openapi-to-postman
+
+      - name: Generate Postman collection
+        run: |
+          # Convert OpenAPI to Postman collection
+          openapi2postmanv2 -s openapi.json -o postman-collection.json -p
+
+          echo "✅ Postman collection generated"
+
+      - name: Upload Postman collection
+        uses: actions/upload-artifact@v3
+        with:
+          name: postman-collection
+          path: postman-collection.json
+
+  # Code Documentation
+  code-docs:
+    name: Generate Code Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install documentation tools
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install sphinx sphinx-autodoc-typehints sphinx-rtd-theme
+
+      - name: Create Sphinx configuration
+        run: |
+          mkdir -p docs
+          cat > docs/conf.py << 'EOF'
+          import os
+          import sys
+          sys.path.insert(0, os.path.abspath('..'))
+
+          project = 'Insurge AI Backend'
+          copyright = '2024, Insurge AI'
+          author = 'Insurge AI Team'
+
+          extensions = [
+              'sphinx.ext.autodoc',
+              'sphinx.ext.viewcode',
+              'sphinx.ext.napoleon',
+              'sphinx_autodoc_typehints',
+          ]
+
+          templates_path = ['_templates']
+          exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
+
+          html_theme = 'sphinx_rtd_theme'
+          html_static_path = ['_static']
+
+          autodoc_default_options = {
+              'members': True,
+              'member-order': 'bysource',
+              'special-members': '__init__',
+              'undoc-members': True,
+              'exclude-members': '__weakref__'
+          }
+          EOF
+
+      - name: Create documentation index
+        run: |
+          cat > docs/index.rst << 'EOF'
+          Insurge AI Backend Documentation
+          ===============================
+
+          Multi-User Chat System API
+
+          .. toctree::
+             :maxdepth: 2
+             :caption: Contents:
+
+             modules
+
+          API Modules
+          ===========
+
+          .. automodule:: app.api.auth
+             :members:
+
+          .. automodule:: app.api.chat
+             :members:
+
+          .. automodule:: app.api.users
+             :members:
+
+          Services
+          ========
+
+          .. automodule:: app.services.chat_service
+             :members:
+
+          .. automodule:: app.services.user_service
+             :members:
+
+          .. automodule:: app.services.ai_service
+             :members:
+
+          Models
+          ======
+
+          .. automodule:: app.models.user
+             :members:
+
+          .. automodule:: app.models.chat_session
+             :members:
+
+          .. automodule:: app.models.chat_message
+             :members:
+
+          .. automodule:: app.models.chat_participant
+             :members:
+
+          Schemas
+          =======
+
+          .. automodule:: app.schemas.user
+             :members:
+
+          .. automodule:: app.schemas.chat
+             :members:
+
+          WebSocket Handlers
+          ==================
+
+          .. automodule:: app.websockets.chat_handler
+             :members:
+
+          .. automodule:: app.websockets.connection_manager
+             :members:
+
+          Indices and tables
+          ==================
+
+          * :ref:`genindex`
+          * :ref:`modindex`
+          * :ref:`search`
+          EOF
+
+      - name: Generate code documentation
+        run: |
+          cd docs
+          sphinx-apidoc -o . ../app --separate -f
+          sphinx-build -b html . _build/html
+
+          echo "✅ Code documentation generated"
+
+      - name: Upload code documentation
+        uses: actions/upload-artifact@v3
+        with:
+          name: code-documentation
+          path: docs/_build/html/
+
+  # Database Schema Documentation
+  db-schema-docs:
+    name: Generate Database Schema Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install sqlalchemy-utils
+
+      - name: Generate database schema documentation
+        run: |
+          python -c "
+          from sqlalchemy import create_engine, MetaData
+          from sqlalchemy.schema import CreateTable
+          import json
+          from app.models.user import User
+          from app.models.chat_session import ChatSession
+          from app.models.chat_message import ChatMessage
+          from app.models.chat_participant import ChatParticipant
+
+          # Create a dummy engine for schema generation
+          engine = create_engine('postgresql://user:pass@localhost/db', echo=False)
+
+          # Get table schemas
+          schemas = {}
+
+          for model_class in [User, ChatSession, ChatMessage, ChatParticipant]:
+              table = model_class.__table__
+              schemas[table.name] = {
+                  'columns': [
+                      {
+                          'name': col.name,
+                          'type': str(col.type),
+                          'nullable': col.nullable,
+                          'primary_key': col.primary_key,
+                          'foreign_key': str(col.foreign_keys) if col.foreign_keys else None
+                      }
+                      for col in table.columns
+                  ]
+              }
+
+          # Save schema documentation
+          with open('database-schema.json', 'w') as f:
+              json.dump(schemas, f, indent=2)
+
+          print('✅ Database schema documentation generated')
+          "
+
+      - name: Generate schema markdown
+        run: |
+          python -c "
+          import json
+
+          with open('database-schema.json', 'r') as f:
+              schemas = json.load(f)
+
+          md_content = '# Database Schema Documentation\n\n'
+          md_content += 'Generated for Insurge AI Multi-User Chat System\n\n'
+
+          for table_name, schema in schemas.items():
+              md_content += f'## {table_name}\n\n'
+              md_content += '| Column | Type | Nullable | Primary Key | Foreign Key |\n'
+              md_content += '|--------|------|----------|-------------|-------------|\n'
+              
+              for col in schema['columns']:
+                  fk = col['foreign_key'] if col['foreign_key'] and col['foreign_key'] != 'set()' else ''
+                  md_content += f\"| {col['name']} | {col['type']} | {col['nullable']} | {col['primary_key']} | {fk} |\n\"
+              
+              md_content += '\n'
+
+          with open('database-schema.md', 'w') as f:
+              f.write(md_content)
+
+          print('✅ Database schema markdown generated')
+          "
+
+      - name: Upload database documentation
+        uses: actions/upload-artifact@v3
+        with:
+          name: database-documentation
+          path: |
+            database-schema.json
+            database-schema.md
+
+  # Deploy Documentation
+  deploy-docs:
+    name: Deploy Documentation
+    runs-on: ubuntu-latest
+    needs: [api-docs, code-docs, db-schema-docs]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all documentation artifacts
+        uses: actions/download-artifact@v3
+
+      - name: Prepare documentation site
+        run: |
+          mkdir -p docs-site
+
+          # Copy API documentation
+          cp api-documentation/api-docs.html docs-site/index.html
+          cp api-documentation/openapi.json docs-site/
+
+          # Copy code documentation
+          cp -r code-documentation/* docs-site/code/
+
+          # Copy database documentation
+          cp database-documentation/database-schema.md docs-site/
+
+          # Create a simple index page
+          cat > docs-site/documentation.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Insurge AI Backend Documentation</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 40px; }
+                  .card { border: 1px solid #ddd; padding: 20px; margin: 20px 0; border-radius: 8px; }
+                  h1 { color: #333; }
+                  a { color: #0066cc; text-decoration: none; }
+                  a:hover { text-decoration: underline; }
+              </style>
+          </head>
+          <body>
+              <h1>🚀 Insurge AI Backend Documentation</h1>
+              
+              <div class="card">
+                  <h2>📋 API Documentation</h2>
+                  <p>Interactive API documentation with all endpoints</p>
+                  <a href="index.html">View API Documentation</a>
+              </div>
+              
+              <div class="card">
+                  <h2>💻 Code Documentation</h2>
+                  <p>Detailed code documentation with all modules and classes</p>
+                  <a href="code/index.html">View Code Documentation</a>
+              </div>
+              
+              <div class="card">
+                  <h2>🗄️ Database Schema</h2>
+                  <p>Complete database schema documentation</p>
+                  <a href="database-schema.md">View Database Schema</a>
+              </div>
+              
+              <div class="card">
+                  <h2>📊 OpenAPI Specification</h2>
+                  <p>Machine-readable API specification</p>
+                  <a href="openapi.json">Download OpenAPI JSON</a>
+              </div>
+          </body>
+          </html>
+          EOF
+
+          echo "✅ Documentation site prepared"
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./docs-site
+          cname: docs.insurge-ai.com # Optional: set your custom domain
+
+  # Update README with latest API endpoints
+  update-readme:
+    name: Update README
+    runs-on: ubuntu-latest
+    needs: api-docs
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download API documentation
+        uses: actions/download-artifact@v3
+        with:
+          name: api-documentation
+
+      - name: Update README with API endpoints
+        run: |
+          python -c "
+          import json
+
+          # Load OpenAPI spec
+          with open('openapi.json', 'r') as f:
+              spec = json.load(f)
+
+          # Generate API endpoints section
+          endpoints_md = '\n## 📋 API Endpoints\n\n'
+          endpoints_md += '### Authentication\n'
+
+          for path, methods in spec['paths'].items():
+              if '/auth/' in path:
+                  for method, details in methods.items():
+                      if method.upper() in ['GET', 'POST', 'PUT', 'DELETE']:
+                          summary = details.get('summary', 'No description')
+                          endpoints_md += f'- **{method.upper()}** \`{path}\` - {summary}\n'
+
+          endpoints_md += '\n### Chat Management\n'
+          for path, methods in spec['paths'].items():
+              if '/chat/' in path:
+                  for method, details in methods.items():
+                      if method.upper() in ['GET', 'POST', 'PUT', 'DELETE']:
+                          summary = details.get('summary', 'No description')
+                          endpoints_md += f'- **{method.upper()}** \`{path}\` - {summary}\n'
+
+          endpoints_md += '\n### User Management\n'
+          for path, methods in spec['paths'].items():
+              if '/users/' in path:
+                  for method, details in methods.items():
+                      if method.upper() in ['GET', 'POST', 'PUT', 'DELETE']:
+                          summary = details.get('summary', 'No description')
+                          endpoints_md += f'- **{method.upper()}** \`{path}\` - {summary}\n'
+
+          # Read current README
+          with open('README.md', 'r') as f:
+              readme_content = f.read()
+
+          # Replace or append API endpoints section
+          if '## 📋 API Endpoints' in readme_content:
+              # Replace existing section
+              start = readme_content.find('## 📋 API Endpoints')
+              end = readme_content.find('\n## ', start + 1)
+              if end == -1:
+                  end = len(readme_content)
+              
+              new_readme = readme_content[:start] + endpoints_md + readme_content[end:]
+          else:
+              # Append to end
+              new_readme = readme_content + endpoints_md
+
+          # Write updated README
+          with open('README.md', 'w') as f:
+              f.write(new_readme)
+
+          print('✅ README updated with latest API endpoints')
+          "
+
+      - name: Commit README changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add README.md
+          git diff --staged --quiet || git commit -m "📝 Update README with latest API endpoints [skip ci]"
+          git push

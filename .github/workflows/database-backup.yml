@@ -1,0 +1,120 @@
+name: Database Backup
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to backup"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - production
+          - staging
+
+jobs:
+  backup-database:
+    name: Backup Database
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'production' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set environment variables
+        run: |
+          if [ "${{ github.event.inputs.environment }}" == "staging" ]; then
+            echo "DB_HOST=${{ secrets.STAGING_DB_HOST }}" >> $GITHUB_ENV
+            echo "DB_USER=${{ secrets.STAGING_DB_USER }}" >> $GITHUB_ENV
+            echo "DB_PASSWORD=${{ secrets.STAGING_DB_PASSWORD }}" >> $GITHUB_ENV
+            echo "DB_NAME=${{ secrets.STAGING_DB_NAME }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ secrets.STAGING_BACKUP_BUCKET }}" >> $GITHUB_ENV
+          else
+            echo "DB_HOST=${{ secrets.PRODUCTION_DB_HOST }}" >> $GITHUB_ENV
+            echo "DB_USER=${{ secrets.PRODUCTION_DB_USER }}" >> $GITHUB_ENV
+            echo "DB_PASSWORD=${{ secrets.PRODUCTION_DB_PASSWORD }}" >> $GITHUB_ENV
+            echo "DB_NAME=${{ secrets.PRODUCTION_DB_NAME }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ secrets.PRODUCTION_BACKUP_BUCKET }}" >> $GITHUB_ENV
+          fi
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Create database backup
+        run: |
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          BACKUP_FILE="insurge_db_backup_${TIMESTAMP}.sql"
+
+          # Use PostgreSQL client to create backup
+          PGPASSWORD="${DB_PASSWORD}" pg_dump \
+            -h "${DB_HOST}" \
+            -U "${DB_USER}" \
+            -d "${DB_NAME}" \
+            --verbose \
+            --clean \
+            --no-owner \
+            --no-privileges \
+            --format=custom \
+            --file="${BACKUP_FILE}"
+
+          # Compress the backup
+          gzip "${BACKUP_FILE}"
+          echo "BACKUP_FILE=${BACKUP_FILE}.gz" >> $GITHUB_ENV
+
+      - name: Configure AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Upload backup to S3
+        run: |
+          aws s3 cp "${BACKUP_FILE}" "s3://${S3_BUCKET}/database-backups/"
+
+          # List recent backups
+          echo "Recent backups:"
+          aws s3 ls "s3://${S3_BUCKET}/database-backups/" --recursive | sort | tail -10
+
+      - name: Cleanup old backups (keep last 30 days)
+        run: |
+          # Delete backups older than 30 days
+          aws s3 ls "s3://${S3_BUCKET}/database-backups/" --recursive | \
+          while read -r line; do
+            createDate=$(echo $line | awk {'print $1" "$2'})
+            createDate=$(date -d "$createDate" +%s)
+            olderThan=$(date -d "30 days ago" +%s)
+            if [[ $createDate -lt $olderThan ]]; then
+              fileName=$(echo $line | awk {'print $4'})
+              if [[ $fileName != "" ]]; then
+                aws s3 rm "s3://${S3_BUCKET}/$fileName"
+                echo "Deleted old backup: $fileName"
+              fi
+            fi
+          done
+
+      - name: Verify backup integrity
+        run: |
+          # Download and verify the backup
+          aws s3 cp "s3://${S3_BUCKET}/database-backups/${BACKUP_FILE}" ./verify_backup.gz
+
+          # Check if the file can be decompressed
+          gunzip -t ./verify_backup.gz
+
+          echo "✅ Backup integrity verified"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "🚨 Database backup failed for ${{ github.event.inputs.environment || 'production' }} environment"
+
+      - name: Notify on success
+        if: success()
+        run: |
+          echo "✅ Database backup completed successfully for ${{ github.event.inputs.environment || 'production' }} environment"
